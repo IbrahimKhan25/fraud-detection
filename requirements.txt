@@ -4,3 +4,4 @@ scikit-learn
 lightgbm
 matplotlib
 ipykernel
+joblib
