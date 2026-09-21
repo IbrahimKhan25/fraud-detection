@@ -60,14 +60,16 @@ def main():
     # using the full dataset (including val) here would leak val information
     # into a training decision, the same mistake as a random split would make.
     neg, pos = (y_train == 0).sum(), (y_train == 1).sum()
-    scale_pos_weight = neg / pos
-    print(f"scale_pos_weight: {scale_pos_weight:.2f} ({neg:,} neg / {pos:,} pos)")
+    print(f"train class balance: {neg:,} negative / {pos:,} positive ({pos / (neg + pos):.4%} fraud)")
 
+    # No scale_pos_weight. Tested it at the full class ratio (~28x) and a milder
+    # 5x -- both destabilized boosting (best_iteration_ stuck at 1 and 12, vs 388
+    # unweighted) and produced worse PR-AUC. LightGBM's ranking-based objective
+    # handles this level of imbalance on its own; see README for the comparison.
     model = LGBMClassifier(
         n_estimators=1000,
         learning_rate=0.05,
         num_leaves=63,
-        scale_pos_weight=scale_pos_weight,
         random_state=42,
         verbose=-1,
     )
@@ -78,6 +80,8 @@ def main():
         eval_metric="auc",  # early-stopping signal; PR-AUC is reported separately below
         callbacks=[lgb.early_stopping(stopping_rounds=50), lgb.log_evaluation(period=50)],
     )
+
+    print(f"\nbest_iteration: {model.best_iteration_} (out of n_estimators={model.n_estimators})")
 
     val_scores = model.predict_proba(X_val)[:, 1]
     pr_auc = average_precision_score(y_val, val_scores)
