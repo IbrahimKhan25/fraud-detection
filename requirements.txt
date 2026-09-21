@@ -1,1 +1,6 @@
-# Dependencies are added per phase.
+pippandas
+pyarrow
+scikit-learn
+lightgbm
+matplotlib
+ipykernel
