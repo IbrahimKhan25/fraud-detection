@@ -1,0 +1,14 @@
+# Local dev only. Phase 3 will add the FastAPI serving container to this
+# same file; for now it's just Redis, for running the offline/online
+# feature parity test and the serving code against something real instead of fakeredis.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --save 60 1
+
+volumes:
+  redis-data:

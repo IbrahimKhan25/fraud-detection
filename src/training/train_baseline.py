@@ -5,51 +5,18 @@ before any serving/feature-store infrastructure gets built.
 Run from the repo root:
     python -m src.training.train_baseline
 """
-from pathlib import Path
-
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier
 from sklearn.metrics import average_precision_score
 
-ROOT = Path(__file__).resolve().parents[2]
-RAW = ROOT / "data" / "raw"
-MODELS = ROOT / "models"
-
-TARGET = "isFraud"
-DROP_COLS = ["TransactionID", "isFraud", "TransactionDT"]  # ID, target, raw time index
-
-
-def load_data() -> pd.DataFrame:
-    cached = RAW / "train_joined.parquet"
-    if cached.exists():
-        return pd.read_parquet(cached)
-    tx = pd.read_csv(RAW / "train_transaction.csv")
-    ident = pd.read_csv(RAW / "train_identity.csv")
-    return tx.merge(ident, on="TransactionID", how="left")
-
-
-def time_split(df: pd.DataFrame, cutoff_quantile: float = 0.80):
-    cutoff_dt = df["TransactionDT"].quantile(cutoff_quantile)
-    train_df = df[df["TransactionDT"] < cutoff_dt]
-    val_df = df[df["TransactionDT"] >= cutoff_dt]
-    return train_df, val_df
-
-
-def prep_features(df: pd.DataFrame) -> pd.DataFrame:
-    X = df.drop(columns=DROP_COLS)
-    # LightGBM handles categoricals natively if the dtype is "category" -- no
-    # one-hot encoding needed, which matters here since P_emaildomain etc.
-    # would otherwise explode into hundreds of columns.
-    obj_cols = X.select_dtypes(include="object").columns
-    X[obj_cols] = X[obj_cols].astype("category")
-    return X
+from src.training.common import MODELS, TARGET, load_raw, prep_features, time_split
 
 
 def main():
     print("loading data...")
-    df = load_data()
+    df = load_raw()
     train_df, val_df = time_split(df)
     print(f"train: {len(train_df):,} rows | val: {len(val_df):,} rows")
 

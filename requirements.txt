@@ -1,7 +1,10 @@
-pippandas
+pandas
 pyarrow
 scikit-learn
 lightgbm
 matplotlib
 ipykernel
 joblib
+redis
+fakeredis
+pytest
