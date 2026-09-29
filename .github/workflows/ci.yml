@@ -1,10 +1,12 @@
-# Tests and an image build on every push and pull request.
+# Tests and an image build on every pull request and every push to main.
 # No data or model is needed: IEEE-CIS is not in the repo, so the real-data
 # parity tests skip here and the synthetic parity test covers that path.
 name: CI
 
+# Push is limited to main so a branch with an open PR runs once, not twice.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
