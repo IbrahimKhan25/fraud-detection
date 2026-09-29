@@ -7,7 +7,9 @@ that outputs an AUC score.
 ## Status
 
 Phase 1 (data and baseline model) done. Phase 2 (feature pipeline) done.
-Phase 3 (serving) done and load tested. Phase 4 (monitoring) built; first live drift run not yet recorded. See results below.
+Phase 3 (serving) done and load tested. Phase 4 (monitoring) done and validated
+(see "How sensitive is it"). Phase 5 (CI/CD) in progress: CI runs the tests and
+builds the image on every push and pull request. See results below.
 
 ## Dataset
 
@@ -485,9 +487,14 @@ On macOS, LightGBM needs OpenMP, which isn't preinstalled: `brew install libomp`
 
 ## Roadmap
 
-- Phase 3: FastAPI serving endpoint, containerized, load tested (Locust/k6)
-  for real latency numbers. `src/features/store.py`'s `RedisFeatureStore` is
-  what the endpoint will call per request.
-- Phase 4: prediction logging, drift detection (PSI or KS test), retraining
-  trigger.
-- Phase 5: CI/CD, scheduled or drift-triggered retraining and redeploy.
+- Phase 5, done so far: `.github/workflows/ci.yml` runs pytest (with a real
+  Postgres service, so the end-to-end logging test runs) and builds the API
+  image on every push and pull request. Dependencies are pinned, since the
+  model is a pickle and must load with the scikit-learn and LightGBM versions
+  it was trained with. The IEEE-CIS data is not in the repo, so CI checks
+  training/serving parity on synthetic data built to hit the edge cases
+  (same-second ties, both sides of the 1h and 24h window edges, missing
+  devices, singleton entities); the real-data parity tests run locally.
+- Phase 5, next: a retrain workflow (download data, retrain, PR-AUC gate,
+  publish the model and an image tagged with its version to GHCR). There is no
+  deploy target, so redeploy means publishing that image.
