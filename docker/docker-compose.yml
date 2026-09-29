@@ -1,6 +1,5 @@
-# Local dev only. Phase 3 will add the FastAPI serving container to this
-# same file; for now it's just Redis, for running the offline/online
-# feature parity test and the serving code against something real instead of fakeredis.
+# Local dev. `docker compose -f docker/docker-compose.yml up -d redis` for just
+# Redis (run the API from VS Code), or `up -d --build` for Redis + the API container.
 services:
   redis:
     image: redis:7-alpine
@@ -9,6 +8,20 @@ services:
     volumes:
       - redis-data:/data
     command: redis-server --save 60 1
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MODEL_PATH: /models/phase2_lgbm.pkl
+    volumes:
+      - ../models:/models:ro
+    depends_on:
+      - redis
 
 volumes:
   redis-data:

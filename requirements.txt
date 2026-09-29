@@ -8,3 +8,7 @@ joblib
 redis
 fakeredis
 pytest
+fastapi
+uvicorn[standard]
+httpx
+locust

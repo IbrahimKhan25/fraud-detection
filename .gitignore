@@ -10,3 +10,4 @@ data/raw/*
 data/processed/*
 models/*
 !**/.gitkeep
+loadtest/payloads.jsonl

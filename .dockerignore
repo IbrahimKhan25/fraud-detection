@@ -1,0 +1,8 @@
+.venv
+.git
+data
+notebooks
+tests
+__pycache__
+*.parquet
+*.csv

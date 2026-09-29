@@ -6,8 +6,8 @@ that outputs an AUC score.
 
 ## Status
 
-Phase 1 (data and baseline model) done. Phase 2 (feature pipeline) done. See
-results below.
+Phase 1 (data and baseline model) done. Phase 2 (feature pipeline) done.
+Phase 3 (serving) built and load tested locally; container run still to do. See results below.
 
 ## Dataset
 
@@ -199,6 +199,70 @@ Local Redis for exercising `RedisFeatureStore` against something real
 ```
 docker compose -f docker/docker-compose.yml up -d
 ```
+
+## Phase 3: serving
+
+`src/serving/app.py`. `POST /score` takes one transaction, reads the entity's
+state from Redis, computes the 8 engineered features with the same
+`RedisFeatureStore` the parity test covers, scores with `models/phase2_lgbm.pkl`,
+then records the transaction. `GET /health` pings Redis.
+
+The request has a few core fields (`TransactionID`, `TransactionDT`,
+`TransactionAmt`, the six entity key columns, `DeviceInfo`) plus a `features`
+dict for every other raw column the model was trained on. Missing keys score as
+NaN. Categorical columns are detected from the model itself and cast to
+`category` so LightGBM re-maps them onto the training categories.
+
+Entity ID formatting matters: `card1` is int64 in the raw data and the other
+key columns are float64, so `13926` and `13926.0` would build different
+entities. `entity_id_for()` reuses `build_entity_id` with those dtypes, and
+`tests/test_serving.py` checks it.
+
+```
+docker compose -f docker/docker-compose.yml up -d redis
+uvicorn src.serving.app:app --port 8000          # http://localhost:8000/docs
+uvicorn src.serving.app:app --port 8000 --workers 4   # several processes, for throughput
+pytest tests/test_serving.py -v                  # no Redis or real model needed
+
+python -m loadtest.make_payloads                 # needs data/processed/train_features.parquet
+locust -f loadtest/locustfile.py --host http://127.0.0.1:8000 --headless -u 20 -r 5 -t 60s --csv loadtest/results   # ~20 req/s (1 per user)
+
+docker compose -f docker/docker-compose.yml up -d --build   # Redis + API container on :8000
+```
+
+### Load test results
+
+Locust, `loadtest/locustfile.py`: 2,000 real transactions sampled from the
+training set (full ~430-field payloads), replayed at a fixed rate of 1
+request per second per simulated user, 60 s per run. MacBook (Apple silicon),
+4 uvicorn workers, local Redis, Locust running on the same machine, not in
+Docker. Latency in ms.
+
+| Rate | Requests | p50 | p95 | p99 | max | Failures |
+|---|---|---|---|---|---|---|
+| ~20 req/s (20 users) | 1,170 | 14 | 25 | 46 | 63 | not recorded |
+| ~47 req/s (50 users) | 2,775 | 17 | 29 | 45 | 53 | 0 |
+| ~85 req/s avg (100 users) | 5,050 | 17 | 42 | 120 | 198 | 0 |
+
+p99 stays under the 100 ms target up to about 47 req/s. At the 100-user run
+p95 is still 42 ms but p99 exceeds 100 ms, so the practical ceiling for this
+setup is between 47 and ~85 req/s. Single runs on a shared laptop CPU, so
+treat the numbers as indicative, not a benchmark.
+
+What moved the numbers: the first version (one process, pandas frame per
+request, saturating load with no pause between requests) gave p50 380 ms and
+p95 550 ms at 46 req/s, all of it queueing behind ~21 ms of per-request CPU.
+Per-request profiling showed 5.5 ms building a 439-column DataFrame, 7.8 ms
+in `predict_proba` and 1.6 ms building the entity ID with a one-row frame.
+Replacing the frame with a NumPy row plus training-time category codes,
+building the entity ID with string formatting, and running 4 workers removed
+most of that. `tests/test_serving.py` checks the fast prediction equals the
+pandas path and the entity ID equals `build_entity_id`.
+
+Known limits: read-then-write on entity state is not atomic under concurrent
+requests for the same entity (see `store.py`), and `/score` mutates state, so
+retries of the same transaction double count. No alert threshold is applied
+yet; the endpoint returns the raw score.
 
 ## Setup
 
