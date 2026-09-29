@@ -34,6 +34,13 @@ import numpy as np
 import pandas as pd
 
 
+def model_version(path) -> str:
+    """First 12 hex chars of the model file's SHA-256, so every logged
+    prediction says exactly which model file produced it. Training uses the
+    same function to name the release, so the two always agree."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12]
+
+
 class FraudModel:
     def __init__(self, model, version: str = "unversioned"):
         self.model = model
@@ -66,10 +73,7 @@ class FraudModel:
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"model file not found: {path}")
-        # Version = first 12 hex chars of the file's SHA-256, so every logged
-        # prediction says exactly which model file produced it.
-        version = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
-        return cls(joblib.load(path), version=version)
+        return cls(joblib.load(path), version=model_version(path))
 
     def loggable(self, values: Dict[str, object]) -> Dict[str, object]:
         """The model's inputs that are actually present (missing ones are
