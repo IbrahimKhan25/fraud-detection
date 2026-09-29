@@ -24,6 +24,7 @@ Which columns are categorical is read from the model itself
 category values, numeric ones list a [min:max] range), so this doesn't
 depend on a side file that could drift from the pickle.
 """
+import hashlib
 import math
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -34,8 +35,9 @@ import pandas as pd
 
 
 class FraudModel:
-    def __init__(self, model):
+    def __init__(self, model, version: str = "unversioned"):
         self.model = model
+        self.version = version
         self.feature_names: List[str] = list(model.booster_.feature_name())
         info = model.booster_.dump_model(num_iteration=1)["feature_infos"]
         self.categorical_cols = {
@@ -64,7 +66,16 @@ class FraudModel:
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"model file not found: {path}")
-        return cls(joblib.load(path))
+        # Version = first 12 hex chars of the file's SHA-256, so every logged
+        # prediction says exactly which model file produced it.
+        version = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        return cls(joblib.load(path), version=version)
+
+    def loggable(self, values: Dict[str, object]) -> Dict[str, object]:
+        """The model's inputs that are actually present (missing ones are
+        left out: an absent key means missing). This is what gets logged."""
+        idx = self._index
+        return {k: v for k, v in values.items() if k in idx and v is not None and v == v}
 
     def _row(self, values: Dict[str, object]) -> np.ndarray:
         row = np.full((1, len(self.feature_names)), np.nan)

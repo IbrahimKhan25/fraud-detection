@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements-serving.txt
 
 COPY src/__init__.py src/__init__.py
 COPY src/features src/features
+COPY src/monitoring src/monitoring
 COPY src/serving src/serving
 
 # The model is mounted at runtime (see docker-compose.yml), not baked in.

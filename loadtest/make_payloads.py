@@ -21,18 +21,27 @@ def _clean(v):
     return None if pd.isna(v) else (v.item() if hasattr(v, "item") else v)
 
 
+def row_to_payload(row, extra_cols) -> dict:
+    """One /score request body from a feature-table row."""
+    body = {c: _clean(row[c]) for c in CORE}
+    body["TransactionID"] = int(body["TransactionID"])
+    if body["card1"] is not None:
+        body["card1"] = int(body["card1"])
+    body["features"] = {c: _clean(row[c]) for c in extra_cols}
+    return body
+
+
+def extra_columns(columns) -> list:
+    skip = set(CORE) | set(DROP_COLS) | set(FEATURE_COLUMNS) | {"entity_id"}
+    return [c for c in columns if c not in skip]
+
+
 def main(n: int = 2000):
     df = pd.read_parquet(PROCESSED / "train_features.parquet").sample(n, random_state=0)
-    skip = set(CORE) | set(DROP_COLS) | set(FEATURE_COLUMNS) | {"entity_id"}
-    extra_cols = [c for c in df.columns if c not in skip]
+    extra_cols = extra_columns(df.columns)
     with open(OUT, "w") as f:
         for _, row in df.iterrows():
-            body = {c: _clean(row[c]) for c in CORE}
-            body["TransactionID"] = int(body["TransactionID"])
-            if body["card1"] is not None:
-                body["card1"] = int(body["card1"])
-            body["features"] = {c: _clean(row[c]) for c in extra_cols}
-            f.write(json.dumps(body) + "\n")
+            f.write(json.dumps(row_to_payload(row, extra_cols)) + "\n")
     print(f"wrote {n} payloads to {OUT}")
 
 

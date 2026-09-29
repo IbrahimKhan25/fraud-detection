@@ -1,5 +1,5 @@
-# Local dev. `docker compose -f docker/docker-compose.yml up -d redis` for just
-# Redis (run the API from VS Code), or `up -d --build` for Redis + the API container.
+# Local dev. `docker compose -f docker/docker-compose.yml up -d redis postgres` for just
+# the datastores (run the API from VS Code), or `up -d --build` for everything.
 services:
   redis:
     image: redis:7-alpine
@@ -8,6 +8,24 @@ services:
     volumes:
       - redis-data:/data
     command: redis-server --save 60 1
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud
+      POSTGRES_DB: fraud
+    ports:
+      - "5433:5432"   # host port 5433 so it can't clash with a Postgres you already run
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      # schema is applied automatically the first time the volume is created
+      - ../src/monitoring/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fraud -d fraud"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   api:
     build:
@@ -19,11 +37,16 @@ services:
       OMP_NUM_THREADS: "1"
       WEB_CONCURRENCY: "4"
       REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://fraud:fraud@postgres:5432/fraud
       MODEL_PATH: /models/phase2_lgbm.pkl
     volumes:
       - ../models:/models:ro
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
 volumes:
   redis-data:
+  pg-data:

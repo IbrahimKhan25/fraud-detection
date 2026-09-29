@@ -34,3 +34,10 @@ class ScoreResponse(BaseModel):
     entity_id: str
     engineered_features: Dict[str, Optional[float]]
     latency_ms: float
+
+
+class Outcome(BaseModel):
+    """Ground truth for a transaction that was scored earlier (chargeback,
+    confirmed fraud or confirmed legitimate)."""
+    TransactionID: int
+    isFraud: int = Field(ge=0, le=1)
