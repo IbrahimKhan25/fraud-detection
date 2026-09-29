@@ -1,0 +1,150 @@
+# Retrain from the IEEE-CIS data, gate against the champion, publish.
+#
+# Champion = the model in the latest `model-*` GitHub Release. A new model is
+# published only if src/training/gate.py passes it: a Release `model-<version>`
+# with the model, its drift reference and metrics, and an image with the model
+# baked in at ghcr.io/<owner>/fraud-api:model-<version> and :latest.
+#
+# Honest limit: the data is the same static Kaggle file every run, so this
+# proves the pipeline and the gate work, not that retraining improves anything.
+# A useful retrain needs new labelled data (logged predictions joined to
+# outcomes). There is no deploy target; redeploy means pulling the new image.
+name: Retrain
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the Release and image if the gate passes"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # create the Release
+  packages: write   # push to GHCR
+
+concurrency:
+  group: retrain
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-serving.txt
+      - run: pip install -r requirements.txt kaggle==2.2.4
+
+      - name: Download IEEE-CIS
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          for f in train_transaction.csv train_identity.csv; do
+            kaggle competitions download -c ieee-fraud-detection -f "$f" -p data/raw
+            if [ -f "data/raw/$f.zip" ]; then unzip -o -q "data/raw/$f.zip" -d data/raw && rm "data/raw/$f.zip"; fi
+            test -f "data/raw/$f"
+          done
+          ls -lh data/raw
+
+      # Peak memory and time per step are printed, since runner limits were unmeasured.
+      - name: Build training set, train, build drift reference
+        run: |
+          [ -x /usr/bin/time ] || sudo apt-get install -y -qq time
+          for m in src.training.build_training_set src.training.train_with_features src.monitoring.reference; do
+            /usr/bin/time -f "$m: %e s, peak RSS %M KB" python -m "$m"
+          done
+
+      - name: Find the champion
+        id: champion
+        run: |
+          tag=$(gh release list --limit 100 --json tagName,createdAt \
+                  -q '[.[] | select(.tagName | startswith("model-"))] | sort_by(.createdAt) | last | .tagName // ""')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -n "$tag" ]; then
+            gh release download "$tag" -p metrics.json -D champion
+            echo "champion: $tag"
+          else
+            echo "no champion yet"
+          fi
+
+      - name: Gate
+        run: python -m src.training.gate --new models/metrics.json --champion champion/metrics.json
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f models/metrics.json ]; then
+            python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          m = json.load(open("models/metrics.json"))
+          print(f"### Model {m['model_version']}\n")
+          print(f"PR-AUC **{m['pr_auc']:.4f}** (random {m['random_baseline']:.4f}), best_iteration {m['best_iteration']}, {m['n_features']} features\n")
+          print("| Alert rate | Precision | Recall |\n|---|---|---|")
+          for r, v in m["alert_rates"].items():
+              print(f"| {float(r):.0%} | {v['precision']:.4f} | {v['recall']:.4f} |")
+          EOF
+          fi
+
+      - name: Keep metrics as a run artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics
+          path: models/metrics.json
+          if-no-files-found: ignore
+
+      - name: Model version
+        id: version
+        run: |
+          v=$(python -c "import json; print(json.load(open('models/metrics.json'))['model_version'])")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/fraud-api" >> "$GITHUB_OUTPUT"
+          # Identical bytes to an existing release: nothing new to publish.
+          if gh release view "model-$v" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "model-$v is already released; skipping publish"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish Release
+        if: inputs.publish && steps.version.outputs.exists == 'false'
+        run: |
+          v=${{ steps.version.outputs.version }}
+          pr_auc=$(python -c "import json; print(round(json.load(open('models/metrics.json'))['pr_auc'], 4))")
+          gh release create "model-$v" models/phase2_lgbm.pkl models/reference.json models/metrics.json \
+            --title "Model $v (PR-AUC $pr_auc)" \
+            --notes "Retrained by run ${{ github.run_id }} from commit ${{ github.sha }}. Previous champion: ${{ steps.champion.outputs.tag || 'none' }}. Image: ${{ steps.version.outputs.image }}:model-$v"
+
+      - uses: docker/setup-buildx-action@v3
+        if: inputs.publish && steps.version.outputs.exists == 'false'
+      - uses: docker/login-action@v3
+        if: inputs.publish && steps.version.outputs.exists == 'false'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push the image with the model baked in
+        if: inputs.publish && steps.version.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: release
+          push: true
+          tags: |
+            ${{ steps.version.outputs.image }}:model-${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          cache-from: type=gha
