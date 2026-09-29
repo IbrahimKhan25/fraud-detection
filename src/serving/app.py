@@ -84,7 +84,6 @@ def score(txn: Transaction):
             txn_id=txn.TransactionID,
             dt=txn.TransactionDT,
             amt=txn.TransactionAmt,
-            addr1=None if txn.addr1 is None else str(float(txn.addr1)),
             device=txn.DeviceInfo,
         )
     except redis.RedisError as e:

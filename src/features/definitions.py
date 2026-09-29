@@ -33,16 +33,21 @@ ENTITY_KEY_COLS = ["card1", "card2", "card3", "card5", "addr1", "addr2"]
 WINDOW_SHORT_SECONDS = 3600  # 1 hour
 WINDOW_LONG_SECONDS = 86400  # 24 hours
 
+# Note: there is deliberately no "address changed" feature. addr1 is one of
+# ENTITY_KEY_COLS, so an entity by definition never has a different addr1 from
+# its previous transaction; the flag was 0.0 on every row (found by looking
+# at the Phase 2 feature summary: std 0). It was removed rather than kept as
+# a constant column.
+#
 # The engineered feature columns this pipeline produces, and what each one
 # means. Both offline.py and store.py must produce exactly these columns
 # with this meaning.
 FEATURE_COLUMNS = [
     "entity_txn_seq_num",       # count of this entity's transactions strictly before this one (0 = first time we've seen this entity)
-    "entity_time_since_last_sec",  # seconds since this entity's previous transaction; NaN if this is the first
+    "entity_time_since_last_sec",  # seconds since this entity's previous transaction; NaN if this is the first (or arrived out of order, online only)
     "entity_txn_count_1h",      # count of this entity's transactions in the trailing 1h, excluding this one
     "entity_txn_count_24h",     # count of this entity's transactions in the trailing 24h, excluding this one
     "entity_amt_sum_24h",       # sum of TransactionAmt for this entity in the trailing 24h, excluding this one
     "entity_amt_mean_24h",      # mean of TransactionAmt for this entity in the trailing 24h, excluding this one
-    "entity_addr_changed",      # 1 if addr1 differs from this entity's last-seen addr1, 0 if same, NaN if first txn
     "entity_device_changed",    # 1 if DeviceInfo differs from this entity's last-seen DeviceInfo, 0 if same, NaN if first txn or DeviceInfo missing on either side
 ]

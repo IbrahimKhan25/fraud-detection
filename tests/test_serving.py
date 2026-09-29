@@ -92,7 +92,7 @@ def test_score_returns_probability_and_updates_entity_state(client):
     assert f["entity_time_since_last_sec"] == 600.0
     assert f["entity_txn_count_1h"] == 1.0
     assert f["entity_amt_sum_24h"] == 50.0
-    assert f["entity_addr_changed"] == 0.0
+    assert f["entity_device_changed"] == 0.0
 
 
 def test_unseen_category_and_missing_fields_do_not_crash(client):
@@ -217,3 +217,21 @@ def test_entity_id_fast_path_matches_build_entity_id_on_random_rows():
         kw["card1"] = int(row["card1"])
         txn = Transaction(TransactionID=int(row.TransactionID), TransactionDT=0, TransactionAmt=1, **kw)
         assert entity_id_for(txn) == expected.iloc[i]
+
+
+def test_out_of_order_arrival_gives_nan_gap_and_keeps_latest_time(client):
+    client.post("/score", json=_txn(20, 1600.0))
+    late = client.post("/score", json=_txn(21, 1000.0, DeviceInfo="iOS Device")).json()["engineered_features"]
+    assert late["entity_time_since_last_sec"] is None  # not -600
+    assert late["entity_txn_seq_num"] == 1
+    # "latest seen" stayed at 1600, so the next in-order txn measures from it
+    nxt = client.post("/score", json=_txn(22, 2200.0)).json()["engineered_features"]
+    assert nxt["entity_time_since_last_sec"] == 600.0
+    # the late txn's device did not overwrite the latest one (Windows)
+    assert nxt["entity_device_changed"] == 0.0
+
+
+def test_same_timestamp_gap_is_zero_like_offline(client):
+    client.post("/score", json=_txn(30, 500.0))
+    f = client.post("/score", json=_txn(31, 500.0)).json()["engineered_features"]
+    assert f["entity_time_since_last_sec"] == 0.0

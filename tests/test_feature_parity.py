@@ -67,7 +67,6 @@ def test_offline_and_online_agree_on_real_data(sample_df):
             txn_id=row["TransactionID"],
             dt=float(row["TransactionDT"]),
             amt=float(row["TransactionAmt"]),
-            addr1=None if pd.isna(row["addr1"]) else row["addr1"],
             device=None if pd.isna(row["DeviceInfo"]) else row["DeviceInfo"],
         )
 

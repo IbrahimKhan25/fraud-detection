@@ -89,16 +89,16 @@ def _window_counts_and_sums(group: pd.DataFrame) -> pd.DataFrame:
 def compute_features_batch(df: pd.DataFrame, entity_col: str = "entity_id") -> pd.DataFrame:
     """Return a DataFrame aligned to df.index with columns = FEATURE_COLUMNS.
 
-    df must contain: TransactionID, TransactionDT, TransactionAmt, addr1,
+    df must contain: TransactionID, TransactionDT, TransactionAmt,
     DeviceInfo, and either an existing `entity_col` column or the raw
     ENTITY_KEY_COLS (entity_id is built automatically if missing).
     """
-    required = {"TransactionID", "TransactionDT", "TransactionAmt", "addr1", "DeviceInfo"}
+    required = {"TransactionID", "TransactionDT", "TransactionAmt", "DeviceInfo"}
     missing_cols = required - set(df.columns)
     if missing_cols:
         raise ValueError(f"compute_features_batch missing required columns: {missing_cols}")
 
-    work = df[["TransactionID", "TransactionDT", "TransactionAmt", "addr1", "DeviceInfo"]].copy()
+    work = df[["TransactionID", "TransactionDT", "TransactionAmt", "DeviceInfo"]].copy()
     if entity_col in df.columns:
         work[entity_col] = df[entity_col]
     else:
@@ -119,9 +119,6 @@ def compute_features_batch(df: pd.DataFrame, entity_col: str = "entity_id") -> p
     window_feats = grouped.apply(_window_counts_and_sums, include_groups=False)
     window_feats = window_feats.reset_index(level=0, drop=True)
     work = work.join(window_feats)
-
-    prev_addr1 = grouped["addr1"].shift(1)
-    work["entity_addr_changed"] = _changed_flag(work["addr1"], prev_addr1, is_first)
 
     prev_device = grouped["DeviceInfo"].shift(1)
     work["entity_device_changed"] = _changed_flag(work["DeviceInfo"], prev_device, is_first)

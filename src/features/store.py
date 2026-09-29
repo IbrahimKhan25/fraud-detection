@@ -14,9 +14,9 @@ Per entity, Redis holds:
     without re-scanning full history -- ZRANGEBYSCORE/ZCOUNT do that in
     O(log n + k). Members older than the longest window in use are trimmed
     on every write so this never grows unbounded per entity.
-  - `entity:{id}:state`  a HASH: last_dt, last_addr1, last_device,
-    txn_seq_num. Used for time-since-last and the addr/device-changed
-    flags without querying the ZSET.
+  - `entity:{id}:state`  a HASH: last_dt (the latest TransactionDT seen),
+    last_device, txn_seq_num. Used for time-since-last and the
+    device-changed flag without querying the ZSET.
 
 get_features_and_update() reads state BEFORE writing the new transaction
 into it, mirroring offline.py's closed='left' / strictly-prior semantics:
@@ -61,7 +61,6 @@ class RedisFeatureStore:
         txn_id,
         dt: float,
         amt: float,
-        addr1: Optional[str],
         device: Optional[str],
     ) -> dict:
         """Compute this transaction's features from entity_id's state as of
@@ -73,15 +72,13 @@ class RedisFeatureStore:
 
         # Redis hash values are always strings; stringify here so a value
         # read back from a prior call (already a string) compares equal to
-        # the same value passed in fresh (e.g. a pandas float64) instead of
-        # failing every comparison on type alone.
-        addr1 = str(addr1) if addr1 is not None else None
+        # the same value passed in fresh instead of failing every comparison
+        # on type alone.
         device = str(device) if device is not None else None
 
         state = self.client.hgetall(state_key)  # client must be constructed with decode_responses=True
         has_prior = bool(state)
         last_dt = float(state["last_dt"]) if has_prior else None
-        last_addr1 = state.get("last_addr1") or None if has_prior else None
         last_device = state.get("last_device") or None if has_prior else None
         txn_seq_num = int(state.get("txn_seq_num", 0)) if has_prior else 0
 
@@ -92,8 +89,12 @@ class RedisFeatureStore:
         mean_24h = sum_24h / count_24h if count_24h > 0 else math.nan
 
         is_first = txn_seq_num == 0
-        time_since_last = (dt - last_dt) if (not is_first and last_dt is not None) else math.nan
-        addr_changed = self._changed(addr1, last_addr1, is_first)
+        # A transaction that arrives out of order (dt earlier than the latest
+        # one already seen for this entity) has no meaningful "time since
+        # last": NaN, not a negative gap. Equal timestamps give 0, same as
+        # the offline pipeline.
+        in_order = last_dt is not None and dt >= last_dt
+        time_since_last = (dt - last_dt) if (not is_first and in_order) else math.nan
         device_changed = self._changed(device, last_device, is_first)
 
         features = {
@@ -103,7 +104,6 @@ class RedisFeatureStore:
             "entity_txn_count_24h": float(count_24h),
             "entity_amt_sum_24h": sum_24h,
             "entity_amt_mean_24h": mean_24h,
-            "entity_addr_changed": addr_changed,
             "entity_device_changed": device_changed,
         }
         assert list(features.keys()) == FEATURE_COLUMNS
@@ -116,9 +116,9 @@ class RedisFeatureStore:
         pipe.hset(
             state_key,
             mapping={
-                "last_dt": dt,
-                "last_addr1": addr1 if addr1 is not None else _MISSING,
-                "last_device": device if device is not None else _MISSING,
+                # max(): a late arrival must not move "latest seen" backwards
+                "last_dt": max(dt, last_dt) if last_dt is not None else dt,
+                "last_device": (device if in_order or last_dt is None else last_device) or _MISSING,
                 "txn_seq_num": txn_seq_num + 1,
             },
         )

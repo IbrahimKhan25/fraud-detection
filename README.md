@@ -95,9 +95,10 @@ location." IEEE-CIS has no raw geo coordinates to compute one from — `dist1`
 and `dist2` are Vesta's own pre-engineered distances, already sitting in the
 data, not something to derive ourselves. Rather than fabricate coordinates
 to check a box, this is documented as a dataset limitation and substituted
-with `entity_addr_changed` / `entity_device_changed`: whether this
-transaction's address or device differs from the entity's last one. Same
-class of signal (identity/location mismatch), actually computable here.
+with `entity_device_changed`: whether this transaction's device differs
+from the entity's last one. Same class of signal (identity mismatch),
+actually computable here. (An `entity_addr_changed` twin was built first and
+later removed as a constant, see "Removing a dead feature" below.)
 
 **Point-in-time correctness.** Every feature for a transaction is computed
 from that entity's state strictly *before* this transaction — its own
@@ -130,6 +131,7 @@ passed `addr1` (a float from pandas) against a value read back from Redis
 because addresses were changing, but because of a type mismatch invisible
 without a test that actually compares the two paths. That's the skew this
 whole exercise exists to catch, caught before Phase 3 serving ever saw it.
+(The feature itself turned out to be dead for a different reason, below.)
 
 ### Does it improve the model?
 
@@ -180,6 +182,35 @@ keeping past Phase 3 is a separate, smaller question (better entity
 resolution, or letting the model use more capacity, might change the
 answer) and isn't blocking Phase 3.
 
+### Removing a dead feature
+
+The Phase 2 feature summary showed `entity_addr_changed` with mean 0, std 0
+and max 0: it was 0.0 on every row where it had a value. `addr1` is one of
+the six fields that define the entity (`ENTITY_KEY_COLS`), so an entity can
+never have a different `addr1` from its previous transaction. The flag could
+not vary by construction. Nothing had caught it because the online/offline
+parity test passed (both sides agreed on a constant) and the model simply
+never split on it.
+
+Removed it from the offline pipeline, the Redis store, the API and the tests,
+rebuilt the training set and retrained on the Mac (438 features, 7
+engineered). Result, same split and config:
+
+| | with dead column | without |
+|---|---|---|
+| best_iteration | 392 | 392 |
+| PR-AUC | 0.5673 | 0.5673 |
+| alert 2%: precision / recall | 0.711 / 0.413 | 0.711 / 0.413 |
+
+Identical, as expected for removing a column the trees never used. The point
+of the change is honesty and a smaller serving path (one fewer Redis field per
+entity), not accuracy. Ranks among the 438 features: `entity_txn_seq_num` 7,
+`entity_time_since_last_sec` 13, `entity_amt_mean_24h` 24, `entity_amt_sum_24h`
+44, `entity_txn_count_24h` 45, `entity_txn_count_1h` 196,
+`entity_device_changed` 241. Whether a better entity definition (for example
+without `addr1`/`addr2`, which would also make an address-change flag
+meaningful) would help is untested and left as a possible experiment.
+
 ### Reproducing
 
 ```
@@ -203,7 +234,7 @@ docker compose -f docker/docker-compose.yml up -d
 ## Phase 3: serving
 
 `src/serving/app.py`. `POST /score` takes one transaction, reads the entity's
-state from Redis, computes the 8 engineered features with the same
+state from Redis, computes the 7 engineered features with the same
 `RedisFeatureStore` the parity test covers, scores with `models/phase2_lgbm.pkl`,
 then records the transaction. `GET /health` pings Redis.
 
@@ -251,13 +282,18 @@ CPUs allocated):
 | Setup | Requests | p50 | p95 | p99 | max | Failures |
 |---|---|---|---|---|---|---|
 | API container, 1 worker | 2,775 | 64 | 100 | 150 | 170 | 0 |
-| API container, 4 workers (`WEB_CONCURRENCY=4`) | 2,775 | 37 | 66 | 130 | 180 | 0 |
+| 4 workers (`WEB_CONCURRENCY=4`) | 2,775 | 37 | 66 | 130 | 180 | 0 |
+| 4 workers + `OMP_NUM_THREADS=1` | 2,775 | 28 | 44 | 61 | 100 | 0 |
 
-Containerized is slower than running natively (p95 66 vs 29 ms at the same
-rate). Part of that is Docker Desktop's networking on macOS between the host
-and the Linux VM, which a Linux host would not pay; I have not isolated how
-much. Four workers cut the median and p95 substantially, but p99 is still
-above 100 ms in the container.
+The last row is the current `docker/docker-compose.yml`. LightGBM starts one
+OpenMP thread per core in every process by default; with 4 workers that was
+~490 threads in the container (`docker stats` PIDs) competing for CPU on
+single-row predictions that gain nothing from threading. Pinning to one
+thread per worker dropped that to 58 PIDs and cut p99 from 130 to 61 ms. The
+same setting may help a native multi-worker run; I have not tested that.
+`docker stats` during the run showed the API at ~20% of the 8 allocated
+CPUs and Redis under 2%, so this setup is nowhere near compute-bound at
+47 req/s.
 
 Natively, p99 stays under the 100 ms target up to about 47 req/s. At the 100-user run
 p95 is still 42 ms but p99 exceeds 100 ms, so the practical ceiling for this
@@ -273,6 +309,10 @@ Replacing the frame with a NumPy row plus training-time category codes,
 building the entity ID with string formatting, and running 4 workers removed
 most of that. `tests/test_serving.py` checks the fast prediction equals the
 pandas path and the entity ID equals `build_entity_id`.
+
+Late-arriving transactions (older than the latest one already seen for that
+entity) get `entity_time_since_last_sec = NaN`, not a negative gap, and do not
+move the entity's stored latest time or device backwards.
 
 Known limits: read-then-write on entity state is not atomic under concurrent
 requests for the same entity (see `store.py`), and `/score` mutates state, so
