@@ -1,10 +1,12 @@
-fastapi
-uvicorn[standard]
-redis
-pandas
-pyarrow
-numpy
-scikit-learn
-lightgbm
-joblib
-psycopg[binary]
+# Pinned to the versions the current model was trained with. The model is a
+# pickle, so scikit-learn and lightgbm here must match training.
+fastapi==0.141.1
+uvicorn[standard]==0.54.0
+redis==8.1.0
+pandas==3.0.6
+pyarrow==25.0.1
+numpy==2.4.6
+scikit-learn==1.9.1
+lightgbm==4.7.0
+joblib==1.6.0
+psycopg[binary]==3.3.6

@@ -12,3 +12,4 @@ models/*
 !**/.gitkeep
 loadtest/payloads.jsonl
 models/reference.json
+*.rdb
