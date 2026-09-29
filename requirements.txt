@@ -1,15 +1,8 @@
-pandas
-pyarrow
-scikit-learn
-lightgbm
-matplotlib
-ipykernel
-joblib
-redis
-fakeredis
-pytest
-fastapi
-uvicorn[standard]
-httpx
-locust
-psycopg[binary]
+# Serving dependencies (pinned there), plus training, notebooks, tests and load test.
+-r requirements-serving.txt
+matplotlib==3.11.2
+ipykernel==7.3.0
+fakeredis==2.38.0
+pytest==9.1.1
+httpx==0.28.1
+locust==2.46.6
