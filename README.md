@@ -495,6 +495,16 @@ On macOS, LightGBM needs OpenMP, which isn't preinstalled: `brew install libomp`
   training/serving parity on synthetic data built to hit the edge cases
   (same-second ties, both sides of the 1h and 24h window edges, missing
   devices, singleton entities); the real-data parity tests run locally.
-- Phase 5, next: a retrain workflow (download data, retrain, PR-AUC gate,
-  publish the model and an image tagged with its version to GHCR). There is no
-  deploy target, so redeploy means publishing that image.
+- Phase 5, retraining: `.github/workflows/retrain.yml`, started by hand
+  (Actions tab, or `gh workflow run retrain.yml`). It downloads IEEE-CIS with a
+  Kaggle API token (repo secret `KAGGLE_API_TOKEN`), builds the training set,
+  trains, builds the drift reference, and runs `src/training/gate.py`: the new
+  model must reach PR-AUC 0.55 and be no more than 0.005 below the champion
+  (the model in the latest `model-*` GitHub Release). If it passes, the model,
+  `reference.json` and `metrics.json` go into a Release named `model-<version>`
+  (the same file hash the API logs as `model_version`), and an image with the
+  model baked in (`docker/Dockerfile`, target `release`) goes to
+  `ghcr.io/ibrahimkhan25/fraud-api:model-<version>` and `:latest`. There is no
+  deploy target, so redeploy means pulling that image. Honest limit: every run
+  uses the same static Kaggle file, so this proves the pipeline and the gate,
+  not that retraining helps. Not yet measured: the first run on GitHub.
