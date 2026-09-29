@@ -240,11 +240,26 @@ Docker. Latency in ms.
 
 | Rate | Requests | p50 | p95 | p99 | max | Failures |
 |---|---|---|---|---|---|---|
-| ~20 req/s (20 users) | 1,170 | 14 | 25 | 46 | 63 | not recorded |
+| ~20 req/s (20 users) | 1,170 | 14 | 25 | 46 | 63 | 0 |
 | ~47 req/s (50 users) | 2,775 | 17 | 29 | 45 | 53 | 0 |
 | ~85 req/s avg (100 users) | 5,050 | 17 | 42 | 120 | 198 | 0 |
 
-p99 stays under the 100 ms target up to about 47 req/s. At the 100-user run
+Same test, 47 req/s (50 users), against the containers from
+`docker compose up --build` (API + Redis, Docker Desktop on the same Mac, 8
+CPUs allocated):
+
+| Setup | Requests | p50 | p95 | p99 | max | Failures |
+|---|---|---|---|---|---|---|
+| API container, 1 worker | 2,775 | 64 | 100 | 150 | 170 | 0 |
+| API container, 4 workers (`WEB_CONCURRENCY=4`) | 2,775 | 37 | 66 | 130 | 180 | 0 |
+
+Containerized is slower than running natively (p95 66 vs 29 ms at the same
+rate). Part of that is Docker Desktop's networking on macOS between the host
+and the Linux VM, which a Linux host would not pay; I have not isolated how
+much. Four workers cut the median and p95 substantially, but p99 is still
+above 100 ms in the container.
+
+Natively, p99 stays under the 100 ms target up to about 47 req/s. At the 100-user run
 p95 is still 42 ms but p99 exceeds 100 ms, so the practical ceiling for this
 setup is between 47 and ~85 req/s. Single runs on a shared laptop CPU, so
 treat the numbers as indicative, not a benchmark.
