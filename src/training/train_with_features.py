@@ -9,7 +9,14 @@ already present via the raw card/addr columns it's built from).
 
 Run from the repo root, after build_training_set.py:
     python -m src.training.train_with_features
+
+Besides the model it writes models/metrics.json (PR-AUC, alert-rate
+precision/recall, model version, library versions), which the retrain
+workflow's gate (src/training/gate.py) compares against the current champion.
 """
+import json
+from datetime import datetime, timezone
+
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -17,7 +24,31 @@ from lightgbm import LGBMClassifier
 from sklearn.metrics import average_precision_score
 
 from src.features.definitions import FEATURE_COLUMNS
+from src.serving.model import model_version
 from src.training.common import DROP_COLS, MODELS, PROCESSED, TARGET, load_parquet_lean, prep_features, time_split
+
+
+ALERT_RATES = (0.01, 0.02, 0.05)
+
+
+def evaluate(y_val, val_scores) -> dict:
+    """PR-AUC and precision/recall at each alert rate (the top X% of scores
+    flagged), the numbers the README reports and the gate compares."""
+    y = np.asarray(y_val)
+    scores = np.asarray(val_scores)
+    out = {
+        "pr_auc": float(average_precision_score(y, scores)),
+        "random_baseline": float(y.mean()),
+        "alert_rates": {},
+    }
+    for alert_rate in ALERT_RATES:
+        threshold = np.quantile(scores, 1 - alert_rate)
+        flagged = scores >= threshold
+        out["alert_rates"][str(alert_rate)] = {
+            "precision": float(y[flagged].mean()),
+            "recall": float(y[flagged].sum() / y.sum()),
+        }
+    return out
 
 
 def main():
@@ -49,16 +80,11 @@ def main():
     print(f"\nbest_iteration: {model.best_iteration_} (out of n_estimators={model.n_estimators})")
 
     val_scores = model.predict_proba(X_val)[:, 1]
-    pr_auc = average_precision_score(y_val, val_scores)
-    random_baseline = y_val.mean()
-    print(f"\nPR-AUC: {pr_auc:.4f}  (random baseline: {random_baseline:.4f})")
+    metrics = evaluate(y_val, val_scores)
+    print(f"\nPR-AUC: {metrics['pr_auc']:.4f}  (random baseline: {metrics['random_baseline']:.4f})")
 
-    for alert_rate in (0.01, 0.02, 0.05):
-        threshold = np.quantile(val_scores, 1 - alert_rate)
-        flagged = val_scores >= threshold
-        precision = y_val[flagged].mean()
-        recall = y_val[flagged].sum() / y_val.sum()
-        print(f"alert rate {alert_rate:>4.0%}: precision {precision:.4f}, recall {recall:.4f}")
+    for alert_rate, m in metrics["alert_rates"].items():
+        print(f"alert rate {float(alert_rate):>4.0%}: precision {m['precision']:.4f}, recall {m['recall']:.4f}")
 
     importances = pd.Series(model.feature_importances_, index=X_train.columns)
     print("\ntop 20 features by importance:")
@@ -73,8 +99,26 @@ def main():
     MODELS.mkdir(exist_ok=True)
     import joblib
 
-    joblib.dump(model, MODELS / "phase2_lgbm.pkl")
-    print(f"\nsaved model to {MODELS / 'phase2_lgbm.pkl'}")
+    model_path = MODELS / "phase2_lgbm.pkl"
+    joblib.dump(model, model_path)
+    print(f"\nsaved model to {model_path}")
+
+    import sklearn
+
+    metrics.update(
+        model_version=model_version(model_path),
+        best_iteration=int(model.best_iteration_),
+        n_features=int(X_train.shape[1]),
+        n_train=len(train_df),
+        n_val=len(val_df),
+        trained_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        library_versions={
+            "lightgbm": lgb.__version__, "scikit-learn": sklearn.__version__,
+            "pandas": pd.__version__, "numpy": np.__version__,
+        },
+    )
+    (MODELS / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    print(f"saved {MODELS / 'metrics.json'} (model_version {metrics['model_version']})")
 
 
 if __name__ == "__main__":
