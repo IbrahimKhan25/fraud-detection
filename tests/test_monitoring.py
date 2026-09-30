@@ -371,3 +371,26 @@ def test_build_reference_calibrates_and_detects_the_amount_shift():
     assert not normal["drifted"], (normal["reason"], normal["score_psi"])
     shifted = drift.evaluate(_rows(fm, _synthetic_frame(rng, 1500, amt_scale=3.0)), ref)
     assert shifted["drifted"] and "TransactionAmt" in shifted["alert_features"]
+
+
+# ---------- retrain trigger ----------
+
+def test_retrain_dispatches_workflow_or_runs_locally(monkeypatch):
+    from src.monitoring import monitor
+
+    calls = []
+    monkeypatch.setattr(monitor.subprocess, "run", lambda cmd, check: calls.append(cmd))
+    monitor.trigger_retrain(local=False)
+    assert calls == [["gh", "workflow", "run", "retrain.yml", "--ref", "main"]]
+
+    calls.clear()
+    monitor.trigger_retrain(local=True)
+    assert [c[-1] for c in calls] == ["src.training.build_training_set", "src.training.train_with_features",
+                                       "src.monitoring.reference"]
+
+
+def test_retrain_flags_are_exclusive():
+    from src.monitoring import monitor
+
+    with pytest.raises(SystemExit):
+        monitor.main(["--retrain", "--retrain-local"])
