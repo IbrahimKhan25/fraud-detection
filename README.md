@@ -4,12 +4,46 @@ Train a model to flag fraudulent transactions, then build the infrastructure
 to serve it in real time with monitoring and retraining, not just a notebook
 that outputs an AUC score.
 
-## Status
+## At a glance
 
-Phase 1 (data and baseline model) done. Phase 2 (feature pipeline) done.
-Phase 3 (serving) done and load tested. Phase 4 (monitoring) done and validated
-(see "How sensitive is it"). Phase 5 (CI/CD and retraining) done: CI on every pull request, and a retrain
-workflow that gates the new model and publishes it. See results below.
+A LightGBM fraud model on the IEEE-CIS data, served in real time: each
+transaction gets point-in-time entity features from Redis, is scored by a
+FastAPI service, and is logged to Postgres. A drift monitor compares live
+traffic with the training data, and a GitHub Actions workflow retrains, gates
+and publishes a new model image. All five phases are done; every number below
+was measured, and the limits are stated next to them.
+
+```mermaid
+flowchart LR
+    T[Transaction] --> API[FastAPI /score]
+    API <--> R[(Redis<br/>entity features)]
+    API --> M[LightGBM model]
+    API --> PG[(Postgres<br/>prediction log)]
+    PG --> D[Drift monitor<br/>PSI per feature + score]
+    D -- drift --> W[GitHub Actions<br/>retrain + PR-AUC gate]
+    W --> G[GHCR image<br/>+ model Release]
+    G -. pull .-> API
+```
+
+| | Result |
+|---|---|
+| Model | PR-AUC 0.567 (random 0.034). At a 2% alert rate: 71% precision, 41% recall |
+| Training/serving parity | Offline and online features identical row by row, tested on real and synthetic data |
+| Latency, native, 47 req/s | p50 17 ms, p95 29 ms, p99 45 ms, 0 failures |
+| Latency, Docker with Postgres logging | p50 28 ms, p95 50 ms, p99 about 120 ms (over the 100 ms target, unresolved) |
+| Drift detection | Amounts x1.25 flagged on both test slices; clean traffic not flagged |
+| Retraining | About 3 minutes on a GitHub runner, 5.4 GB peak, gated, published as a Release and a GHCR image |
+| CI | Tests (with Postgres) and an image build on every pull request |
+
+Main limits: retraining uses the same static Kaggle file, so the loop is
+proven as plumbing, not as an improvement; the entity features did not raise
+PR-AUC (0.5707 without, 0.5673 with, explained in Phase 2); drift thresholds
+and test slices both come from the validation period. Details and reasoning
+for each phase follow.
+
+**Run it:** `docker compose -f docker/docker-compose.yml up -d --build`
+(needs the Kaggle data and a trained model, see Setup and Phase 3), or pull
+the published image `ghcr.io/ibrahimkhan25/fraud-api:latest`.
 
 ## Dataset
 
