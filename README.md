@@ -8,8 +8,8 @@ that outputs an AUC score.
 
 Phase 1 (data and baseline model) done. Phase 2 (feature pipeline) done.
 Phase 3 (serving) done and load tested. Phase 4 (monitoring) done and validated
-(see "How sensitive is it"). Phase 5 (CI/CD) in progress: CI runs the tests and
-builds the image on every push and pull request. See results below.
+(see "How sensitive is it"). Phase 5 (CI/CD and retraining) done: CI on every pull request, and a retrain
+workflow that gates the new model and publishes it. See results below.
 
 ## Dataset
 
@@ -469,11 +469,75 @@ whose score PSI of 0.39 was inflated by the seq_num artifact). Offline across
 max 0.107, so 0.150 was abnormal but under the fixed 0.25. That is why alert
 levels are now calibrated from those windows instead of fixed.
 
-`monitor --retrain` runs the training pipeline when drift is found. Honest
-limit: today that retrains on the same static IEEE-CIS file, so it exercises
-the trigger path but would not fix real drift. A useful retrain needs new
-labelled data (logged predictions joined to outcomes via the `label` column),
-and the API has to be redeployed to load a new model. Both belong to Phase 5.
+`monitor --retrain` starts the retrain workflow when drift is found (see
+Phase 5). Honest limit: that retrains on the same static IEEE-CIS file, so it
+exercises the trigger path but would not fix real drift. A useful retrain
+needs new labelled data (logged predictions joined to outcomes via the `label`
+column).
+
+## Phase 5: CI/CD and retraining
+
+**CI** (`.github/workflows/ci.yml`, every pull request and every push to
+main): pytest with a real Postgres service, so the end-to-end logging test
+runs, then a build of the API image and an import of the app inside it.
+Dependencies are pinned because the model is a pickle and must load with the
+scikit-learn and LightGBM versions it was trained with. The IEEE-CIS data is
+not in the repo, so CI checks training/serving parity on synthetic data built
+to hit the edge cases: same-second ties, gaps on both sides of the 1h and 24h
+window edges, missing and changing devices, singleton entities. Moving the
+store's 1h window by one second makes it fail 56 rows, so it would catch that
+kind of skew. The real-data parity tests run locally.
+
+Writing that test turned up a subtlety. For two transactions of one entity in
+the same second, `entity_txn_seq_num`, `entity_time_since_last_sec` and
+`entity_device_changed` depend on which arrives first (the window features do
+not: same-second transactions are invisible to each other). The real-data
+parity test had been sorting with an unstable sort and passing because the
+sample happened to keep tied rows in order. Replays now sort by
+`TransactionDT, TransactionID`, the order the offline pipeline uses.
+
+**Retraining** (`.github/workflows/retrain.yml`, started by hand from the
+Actions tab, `gh workflow run retrain.yml`, or `monitor --retrain`):
+
+1. Download the two IEEE-CIS CSVs with a Kaggle API token (repo secret `KAGGLE_API_TOKEN`).
+2. Build the training set, train, build the drift reference.
+3. Gate (`src/training/gate.py`): PR-AUC at least 0.55, and no more than 0.005
+   below the champion, the model in the latest `model-*` GitHub Release. The
+   floor sits just under the current 0.5673 to catch a broken pipeline; the
+   0.005 allows for small run-to-run differences. Both are judgment calls.
+4. If it passes, publish a Release `model-<version>` with the model,
+   `reference.json` and `metrics.json`, and an image with the model baked in
+   (`docker/Dockerfile`, target `release`) at
+   `ghcr.io/ibrahimkhan25/fraud-api:model-<version>` and `:latest`.
+   `<version>` is the model file's hash, the same `model_version` the API logs.
+
+First runs, on a standard GitHub runner (4 CPUs, 16 GB):
+
+| | Build training set | Train | Drift reference |
+|---|---|---|---|
+| time, two runs | 34 s, 64 s | 50 s, 69 s | 6 s, 10 s |
+| peak memory | 3.9 GB | 5.4 GB | 4.8 GB |
+
+A whole run takes about 3 minutes plus the image push. The model trained on
+GitHub scores exactly what the local one does (PR-AUC 0.5673, 2% alert rate
+0.711 precision / 0.413 recall, best_iteration 392), and two runs produced
+byte-identical files, so an unchanged rerun skips publishing. The first
+champion is `model-68dce359fcbe`.
+
+The local model file has a different hash (`a5f74e739185`) with identical
+scores: it was pickled under a different Python patch version. Predictions
+are only compared with the reference of the same model version, so to monitor
+the published image use the `reference.json` from its Release:
+
+```
+docker run -p 8000:8000 -e REDIS_URL=... -e DATABASE_URL=... ghcr.io/ibrahimkhan25/fraud-api:latest
+gh release download model-68dce359fcbe -p reference.json -D models/release
+python -m src.monitoring.monitor --reference models/release/reference.json
+```
+
+There is no deploy target, so redeploy means pulling the new image. Honest
+limit: every run uses the same static Kaggle file, so this proves the pipeline
+and the gate work, not that retraining improves the model.
 
 ## Setup
 
@@ -487,24 +551,9 @@ On macOS, LightGBM needs OpenMP, which isn't preinstalled: `brew install libomp`
 
 ## Roadmap
 
-- Phase 5, done so far: `.github/workflows/ci.yml` runs pytest (with a real
-  Postgres service, so the end-to-end logging test runs) and builds the API
-  image on every push and pull request. Dependencies are pinned, since the
-  model is a pickle and must load with the scikit-learn and LightGBM versions
-  it was trained with. The IEEE-CIS data is not in the repo, so CI checks
-  training/serving parity on synthetic data built to hit the edge cases
-  (same-second ties, both sides of the 1h and 24h window edges, missing
-  devices, singleton entities); the real-data parity tests run locally.
-- Phase 5, retraining: `.github/workflows/retrain.yml`, started by hand
-  (Actions tab, or `gh workflow run retrain.yml`). It downloads IEEE-CIS with a
-  Kaggle API token (repo secret `KAGGLE_API_TOKEN`), builds the training set,
-  trains, builds the drift reference, and runs `src/training/gate.py`: the new
-  model must reach PR-AUC 0.55 and be no more than 0.005 below the champion
-  (the model in the latest `model-*` GitHub Release). If it passes, the model,
-  `reference.json` and `metrics.json` go into a Release named `model-<version>`
-  (the same file hash the API logs as `model_version`), and an image with the
-  model baked in (`docker/Dockerfile`, target `release`) goes to
-  `ghcr.io/ibrahimkhan25/fraud-api:model-<version>` and `:latest`. There is no
-  deploy target, so redeploy means pulling that image. Honest limit: every run
-  uses the same static Kaggle file, so this proves the pipeline and the gate,
-  not that retraining helps. Not yet measured: the first run on GitHub.
+- Retrain on new labelled data: logged predictions joined to their outcomes
+  (the `label` column), not the static Kaggle file. This is what would make a
+  drift-triggered retrain useful.
+- A real deploy target, so a published image rolls out without a manual pull.
+- Make entity state updates atomic under concurrent requests for the same
+  entity, and make `/score` idempotent on retries (see Phase 3 known limits).
